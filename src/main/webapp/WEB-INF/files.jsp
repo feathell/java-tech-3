@@ -10,8 +10,13 @@
     <title>File Explorer</title>
 </head>
 <body>
+<div style="text-align: right;">
+    <form method="post" action="<%= request.getContextPath() %>/logout" style="margin: 0;">
+        <button type="submit">Выход</button>
+    </form>
+</div>
 <p><%= request.getAttribute("generatedAt") %></p>
-<h1><%= request.getAttribute("currentPath") %></h1>
+<h1>Пользователь: <%= request.getAttribute("userLogin") %> | Путь: <%= request.getAttribute("currentPath") %></h1>
 <hr/>
 
 <%
@@ -36,6 +41,12 @@
         SimpleDateFormat sdf = new SimpleDateFormat("dd.MM.yyyy HH:mm:ss");
         for (File f : items) {
             String encoded = URLEncoder.encode(f.getAbsolutePath(), "UTF-8");
+            String sizeText;
+            if (f.isDirectory()) {
+                sizeText = "-";
+            } else {
+                sizeText = f.length() + " B";
+            }
     %>
     <tr>
         <td>
@@ -45,7 +56,7 @@
                 <a href="<%= request.getContextPath() %>/download?path=<%= encoded %>"><%= f.getName() %></a>
             <% } %>
         </td>
-        <td><%= f.isDirectory() ? "-" : (f.length() + " B") %></td>
+        <td><%= sizeText %></td>
         <td><%= sdf.format(new Date(f.lastModified())) %></td>
     </tr>
     <% } %>
