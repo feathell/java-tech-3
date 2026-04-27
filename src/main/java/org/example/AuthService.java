@@ -1,23 +1,17 @@
 package org.example;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Properties;
+import java.sql.SQLException;
 
 public final class AuthService {
     private static final File BASE_DIR = new File(System.getProperty("user.home"), "filemanager");
-    private static final File USERS_DIR = new File(BASE_DIR, "users");
     private static final File HOMES_DIR = new File(BASE_DIR, "homes");
 
     private AuthService() {
     }
 
     public static void ensureStorage() {
-        if (!USERS_DIR.exists()) {
-            USERS_DIR.mkdirs();
-        }
         if (!HOMES_DIR.exists()) {
             HOMES_DIR.mkdirs();
         }
@@ -25,6 +19,7 @@ public final class AuthService {
 
     public static String register(String login, String password, String email) throws IOException {
         ensureStorage();
+        ensureDatabase();
 
         String normalizedLogin = normalize(login);
         String normalizedPassword = normalize(password);
@@ -40,18 +35,16 @@ public final class AuthService {
             return "Введите корректный email";
         }
 
-        File userFile = userFile(normalizedLogin);
-        if (userFile.exists()) {
-            return "Пользователь уже существует";
+        String passwordHash = PasswordService.hash(normalizedPassword);
+
+        boolean created;
+        try {
+            created = UserRepository.createUser(normalizedLogin, normalizedEmail, passwordHash);
+        } catch (SQLException e) {
+            throw new IOException("Failed to save user", e);
         }
-
-        Properties props = new Properties();
-        props.setProperty("login", normalizedLogin);
-        props.setProperty("email", normalizedEmail);
-        props.setProperty("password", normalizedPassword);
-
-        try (FileOutputStream out = new FileOutputStream(userFile)) {
-            props.store(out, null);
+        if (!created) {
+            return "Пользователь с таким логином или email уже существует";
         }
 
         File userHome = userHome(normalizedLogin);
@@ -63,24 +56,20 @@ public final class AuthService {
 
     public static boolean authenticate(String login, String password) throws IOException {
         ensureStorage();
+        ensureDatabase();
         String normalizedLogin = normalize(login);
         String normalizedPassword = normalize(password);
         if (normalizedLogin.isBlank() || normalizedPassword.isBlank()) {
             return false;
         }
 
-        File userFile = userFile(normalizedLogin);
-        if (!userFile.exists()) {
-            return false;
+        boolean authenticated;
+        try {
+            authenticated = UserRepository.authenticate(normalizedLogin, normalizedPassword);
+        } catch (SQLException e) {
+            throw new IOException("Failed to authenticate user", e);
         }
-
-        Properties props = new Properties();
-        try (FileInputStream in = new FileInputStream(userFile)) {
-            props.load(in);
-        }
-
-        String storedPassword = props.getProperty("password", "");
-        if (storedPassword.equals(normalizedPassword)) {
+        if (authenticated) {
             File userHome = userHome(normalizedLogin);
             if (!userHome.exists()) {
                 userHome.mkdirs();
@@ -126,8 +115,12 @@ public final class AuthService {
         return targetPath.equals(homePath) || targetPath.startsWith(homePath + File.separator);
     }
 
-    private static File userFile(String login) {
-        return new File(USERS_DIR, login + ".properties");
+    private static void ensureDatabase() throws IOException {
+        try {
+            UserRepository.ensureSchema();
+        } catch (SQLException e) {
+            throw new IOException("Failed to initialize database schema", e);
+        }
     }
 
     private static String normalize(String value) {
