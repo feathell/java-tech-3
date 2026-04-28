@@ -1,72 +1,87 @@
 package org.example;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
+import java.util.List;
+
+import org.hibernate.Session;
+import org.hibernate.Transaction;
+import org.hibernate.exception.ConstraintViolationException;
+import org.hibernate.query.Query;
 
 public final class UserRepository {
-    private static volatile boolean schemaChecked;
-
     private UserRepository() {
     }
 
     public static void ensureSchema() throws SQLException {
-        if (schemaChecked) {
-            return;
-        }
-        synchronized (UserRepository.class) {
-            if (schemaChecked) {
-                return;
-            }
-
-            String sql = """
-                    CREATE TABLE IF NOT EXISTS users (
-                        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                        login VARCHAR(32) NOT NULL UNIQUE,
-                        email VARCHAR(255) NOT NULL UNIQUE,
-                        password VARCHAR(255) NOT NULL
-                    )
-                    """;
-
-            try (Connection connection = DbConnectionFactory.getConnection();
-                 PreparedStatement statement = connection.prepareStatement(sql)) {
-                statement.executeUpdate();
-            }
-            schemaChecked = true;
+        try {
+            HibernateUtil.getSessionFactory();
+        } catch (RuntimeException e) {
+            throw new SQLException("Failed to initialize Hibernate schema", e);
         }
     }
 
     public static boolean createUser(String login, String email, String passwordHash) throws SQLException {
-        String sql = "INSERT INTO users (login, email, password) VALUES (?, ?, ?)";
+        Transaction transaction = null;
+        try (Session session = HibernateUtil.openSession()) {
+            transaction = session.beginTransaction();
 
-        try (Connection connection = DbConnectionFactory.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, login);
-            statement.setString(2, email);
-            statement.setString(3, passwordHash);
-            statement.executeUpdate();
+            UserEntity user = new UserEntity(login, email, passwordHash);
+            session.persist(user);
+
+            transaction.commit();
             return true;
-        } catch (SQLIntegrityConstraintViolationException e) {
-            return false;
+        } catch (ConstraintViolationException e) {
+            rollbackQuietly(transaction);
+            if (isDuplicateConstraint(e)) {
+                return false;
+            }
+            throw new SQLException("Failed to create user", e);
+        } catch (RuntimeException e) {
+            rollbackQuietly(transaction);
+            if (isDuplicateConstraint(e)) {
+                return false;
+            }
+            throw new SQLException("Failed to create user", e);
         }
     }
 
     public static boolean authenticate(String login, String password) throws SQLException {
-        String sql = "SELECT password FROM users WHERE login = ?";
+        String hql = "select u from UserEntity u where u.login = :login";
+        try (Session session = HibernateUtil.openSession()) {
+            Query<UserEntity> query = session.createQuery(hql, UserEntity.class);
+            query.setParameter("login", login);
+            query.setMaxResults(1);
 
-        try (Connection connection = DbConnectionFactory.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, login);
-
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return false;
-                }
-                String storedPassword = resultSet.getString("password");
-                return PasswordService.matches(password, storedPassword);
+            List<UserEntity> users = query.getResultList();
+            if (users.isEmpty()) {
+                return false;
             }
+
+            String storedPassword = users.get(0).getPassword();
+            return PasswordService.matches(password, storedPassword);
+        } catch (RuntimeException e) {
+            throw new SQLException("Failed to authenticate user", e);
         }
+    }
+
+    private static void rollbackQuietly(Transaction transaction) {
+        if (transaction == null) {
+            return;
+        }
+        if (transaction.getStatus().canRollback()) {
+            transaction.rollback();
+        }
+    }
+
+    private static boolean isDuplicateConstraint(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof SQLIntegrityConstraintViolationException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 }
